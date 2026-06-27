@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>桌面宠物 - Mochi</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    background: #1a1a2e;
+    cursor: default;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    user-select: none;
+  }
+
+  canvas {
+    display: block;
+    position: absolute;
+    top: 0; left: 0;
+  }
+
+  .status-panel {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    background: rgba(30, 30, 50, 0.85);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px;
+    padding: 14px 18px;
+    color: #e0e0e0;
+    font-size: 13px;
+    min-width: 160px;
+    z-index: 10;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  .status-panel.visible { opacity: 1; }
+
+  .status-panel .pet-name {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 10px;
+    color: #fff;
+  }
+
+  .stat-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .stat-row:last-child { margin-bottom: 0; }
+  .stat-label { width: 32px; font-size: 12px; color: #aaa; }
+  .stat-bar {
+    flex: 1;
+    height: 6px;
+    background: rgba(255,255,255,0.12);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .stat-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.5s ease;
+  }
+  .stat-fill.happiness { background: #ff6b9d; }
+  .stat-fill.hunger { background: #ffa94d; }
+
+  .hint {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.35);
+    font-size: 12px;
+    z-index: 5;
+    pointer-events: none;
+    transition: opacity 0.8s;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div class="status-panel" id="statusPanel">
+  <div class="pet-name">Mochi</div>
+  <div class="stat-row">
+    <span class="stat-label">开心</span>
+    <div class="stat-bar"><div class="stat-fill happiness" id="happinessBar"></div></div>
+  </div>
+  <div class="stat-row">
+    <span class="stat-label">饱饱</span>
+    <div class="stat-bar"><div class="stat-fill hunger" id="hungerBar"></div></div>
+  </div>
+</div>
+<div class="hint" id="hint">点击摸摸 &bull; 双击喂食 &bull; 拖拽移动</div>
+
+<script>
+(function() {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const statusPanel = document.getElementById('statusPanel');
+  const happinessBar = document.getElementById('happinessBar');
+  const hungerBar = document.getElementById('hungerBar');
+  const hintEl = document.getElementById('hint');
+
+  let W, H;
+
+  function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Particles
+  const particles = [];
+
+  function spawnParticles(x, y, type, count) {
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 1 + Math.random() * 2.5;
+      particles.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 1.5,
+        life: 1,
+        decay: 0.008 + Math.random() * 0.02,
+        type,
+        size: 6 + Math.random() * 8,
+        rot: Math.random() * Math.PI * 2,
+        rotSpeed: (Math.random() - 0.5) * 0.1,
+      });
+    }
+  }
+
+  function updateParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.02;
+      p.life -= p.decay;
+      p.rot += p.rotSpeed;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+  }
+
+  function drawParticles(ctx) {
+    for (const p of particles) {
+      ctx.save();
+      ctx.globalAlpha = p.life;
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+
+      if (p.type === 'heart') {
+        const s = p.size;
+        ctx.fillStyle = '#ff6b9d';
+        ctx.beginPath();
+        ctx.moveTo(0, -s * 0.3);
+        ctx.bezierCurveTo(-s * 0.5, -s * 0.7, -s * 0.5, -s * 0.1, 0, s * 0.3);
+        ctx.bezierCurveTo(s * 0.5, -s * 0.1, s * 0.5, -s * 0.7, 0, -s * 0.3);
+        ctx.fill();
+      } else if (p.type === 'sparkle') {
+        const s = p.size * 0.5;
+        ctx.fillStyle = '#ffd43b';
+        ctx.beginPath();
+        for (let j = 0; j < 4; j++) {
+          const a = (j / 4) * Math.PI * 2;
+          ctx.lineTo(Math.cos(a) * s, Math.sin(a) * s);
+          const a2 = a + Math.PI / 4;
+          ctx.lineTo(Math.cos(a2) * s * 0.35, Math.sin(a2) * s * 0.35);
+        }
+        ctx.closePath();
+        ctx.fill();
+      } else if (p.type === 'zzz') {
+        ctx.fillStyle = '#a0c4ff';
+        ctx.font = `${p.size * 2}px sans-serif`;
+        ctx.fillText('Z', 0, 0);
+      } else if (p.type === 'food') {
+        ctx.fillStyle = '#ffa94d';
+        ctx.beginPath();
+        ctx.arc(0, 0, p.size * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffd8a8';
+        ctx.beginPath();
+        ctx.arc(-2, -2, p.size * 0.15, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.restore();
+    }
+  }
+
+  // Speech Bubble
+  let speechText = '';
+  let speechTimer = 0;
+  const speechMessages = [
+    '喵~', '好舒服呀', '摸我摸我!', 'zzz...', '饿了呢',
+    '你好呀!', '一起玩吧', '最喜欢你了', '嘻嘻', '喵呜~',
+  ];
+
+  function say(text, duration) {
+    speechText = text;
+    speechTimer = duration || 120;
+  }
+
+  function drawSpeechBubble(ctx, x, y) {
+    if (speechTimer <= 0) { speechText = ''; return; }
+
+    const text = speechText;
+    ctx.save();
+    ctx.font = '14px -apple-system, BlinkMacSystemFont, sans-serif';
+    const metrics = ctx.measureText(text);
+    const tw = metrics.width;
+    const th = 18;
+    const pad = 10;
+    const bw = tw + pad * 2;
+    const bh = th + pad;
+    const bx = x - bw / 2;
+    const by = y - 90;
+
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+    ctx.lineWidth = 1;
+
+    const r = 10;
+    ctx.beginPath();
+    ctx.moveTo(bx + r, by);
+    ctx.lineTo(bx + bw - r, by);
+    ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + r);
+    ctx.lineTo(bx + bw, by + bh - r);
+    ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - r, by + bh);
+    ctx.lineTo(bx + bw / 2 + 8, by + bh);
+    ctx.lineTo(bx + bw / 2, by + bh + 10);
+    ctx.lineTo(bx + bw / 2 - 8, by + bh);
+    ctx.lineTo(bx + r, by + bh);
+    ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - r);
+    ctx.lineTo(bx, by + r);
+    ctx.quadraticCurveTo(bx, by, bx + r, by);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#333';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, by + bh / 2 + 1);
+
+    ctx.restore();
+  }
+
+  // Pet States
+  const STATE = { IDLE: 'idle', WALKING: 'walking', HAPPY: 'happy', SLEEPING: 'sleeping', HUNGRY: 'hungry' };
+
+  const pet = {
+    x: 300, y: 400,
+    targetX: 300, targetY: 400,
+    vx: 0, vy: 0,
+    scale: 1,
+    facing: 1,
+
+    state: STATE.IDLE,
+    stateTimer: 0,
+    happiness: 80,
+    hunger: 70,
+
+    animFrame: 0,
+    blinkTimer: 0,
+    isBlinking: false,
+    bobOffset: 0,
+
+    dragging: false,
+    dragOx: 0, dragOy: 0,
+
+    idleTimer: 0,
+  };
+
+  function petBounds() {
+    const s = 70 * pet.scale;
+    return { left: pet.x - s, right: pet.x + s, top: pet.y - 80, bottom: pet.y + 40 };
+  }
+
+  function hitTest(mx, my) {
+    const b = petBounds();
+    return mx >= b.left && mx <= b.right && my >= b.top && my <= b.bottom;
+  }
+
+  function setState(newState) {
+    if (pet.state === newState) return;
+    pet.state = newState;
+    pet.stateTimer = 0;
+    pet.animFrame = 0;
+  }
+
+  // Drawing helpers
+  function drawBody(ctx, bob, color, bellyColor) {
+    ctx.fillStyle = 'rgba(0,0,0,0.08)';
+    ctx.beginPath();
+    ctx.ellipse(0, 15 + bob, 50, 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.ellipse(0, -10 + bob, 50, 40, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = bellyColor;
+    ctx.beginPath();
+    ctx.ellipse(0, 0 + bob, 30, 26, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawEars(ctx, bob, color, innerColor) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(-35, -32 + bob);
+    ctx.lineTo(-50, -58 + bob);
+    ctx.lineTo(-18, -38 + bob);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = innerColor;
+    ctx.beginPath();
+    ctx.moveTo(-33, -34 + bob);
+    ctx.lineTo(-44, -52 + bob);
+    ctx.lineTo(-22, -37 + bob);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(35, -32 + bob);
+    ctx.lineTo(50, -58 + bob);
+    ctx.lineTo(18, -38 + bob);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = innerColor;
+    ctx.beginPath();
+    ctx.moveTo(33, -34 + bob);
+    ctx.lineTo(44, -52 + bob);
+    ctx.lineTo(22, -37 + bob);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawEyes(ctx, bob, eyeState) {
+    if (eyeState === 'closed') {
+      ctx.strokeStyle = '#3d2b1f';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(-18, -6 + bob);
+      ctx.quadraticCurveTo(-10, 0 + bob, -2, -6 + bob);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(2, -6 + bob);
+      ctx.quadraticCurveTo(10, 0 + bob, 18, -6 + bob);
+      ctx.stroke();
+      return;
+    }
+
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.ellipse(-10, -8 + bob, 9, 11, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(10, -8 + bob, 9, 11, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#2d1f0e';
+    ctx.beginPath();
+    ctx.ellipse(-8, -6 + bob, 5, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(12, -6 + bob, 5, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(-7, -9 + bob, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(13, -9 + bob, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawNoseAndMouth(ctx, bob, mood) {
+    ctx.fillStyle = '#f4a0a0';
+    ctx.beginPath();
+    ctx.moveTo(0, -1 + bob);
+    ctx.lineTo(-4, 3 + bob);
+    ctx.lineTo(4, 3 + bob);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = '#5c4033';
+    ctx.lineWidth = 1.5;
+    if (mood === 'happy') {
+      ctx.beginPath();
+      ctx.arc(0, 2 + bob, 8, 0.2, Math.PI - 0.2);
+      ctx.stroke();
+    } else if (mood === 'sad') {
+      ctx.beginPath();
+      ctx.arc(0, 14 + bob, 6, Math.PI + 0.3, -0.3);
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(-5, 5 + bob);
+      ctx.quadraticCurveTo(0, 8 + bob, 5, 5 + bob);
+      ctx.stroke();
+    }
+  }
+
+  function drawWhiskers(ctx, bob) {
+    ctx.strokeStyle = 'rgba(80,60,40,0.5)';
+    ctx.lineWidth = 0.8;
+    for (let i = -1; i <= 1; i++) {
+      ctx.beginPath();
+      ctx.moveTo(-22, 0 + bob + i * 5);
+      ctx.lineTo(-42, -4 + bob + i * 8);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(22, 0 + bob + i * 5);
+      ctx.lineTo(42, -4 + bob + i * 8);
+      ctx.stroke();
+    }
+  }
+
+  function drawPaws(ctx, bob) {
+    ctx.fillStyle = '#f5e6d3';
+    ctx.beginPath();
+    ctx.ellipse(-22, 20 + bob, 10, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(22, 20 + bob, 10, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(0,0,0,0.06)';
+    for (const ox of [-26, -18, 18, 26]) {
+      ctx.beginPath();
+      ctx.arc(ox, 18 + bob, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawTail(ctx, bob, tailAngle, color) {
+    ctx.save();
+    ctx.translate(-40, 5 + bob);
+    ctx.rotate(-0.3);
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 8;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.bezierCurveTo(-15, -20, 5 + tailAngle * 8, -40, 10 + tailAngle * 5, -35);
+    ctx.stroke();
+
+    ctx.fillStyle = '#f5e6d3';
+    ctx.beginPath();
+    ctx.arc(10 + tailAngle * 5, -35, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  function drawBlush(ctx, bob) {
+    ctx.fillStyle = 'rgba(255,160,160,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(-22, 3 + bob, 7, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(22, 3 + bob, 7, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // State drawing
+  function drawPet(ctx) {
+    const { x, y, facing, state } = pet;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(facing, 1);
+
+    const bob = pet.bobOffset;
+
+    if (state === STATE.SLEEPING) {
+      // Lying down
+      ctx.fillStyle = 'rgba(0,0,0,0.06)';
+      ctx.beginPath(); ctx.ellipse(0, 22, 60, 10, 0, 0, Math.PI * 2); ctx.fill();
+
+      ctx.fillStyle = '#fae3c6';
+      ctx.beginPath(); ctx.ellipse(0, 5, 55, 30, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff8f0';
+      ctx.beginPath(); ctx.ellipse(0, 10, 35, 20, 0, 0, Math.PI * 2); ctx.fill();
+
+      ctx.fillStyle = '#fae3c6';
+      ctx.beginPath(); ctx.ellipse(-35, -12, 12, 8, -0.5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(35, -12, 12, 8, 0.5, 0, Math.PI * 2); ctx.fill();
+
+      drawEyes(ctx, -5, 'closed');
+      ctx.strokeStyle = '#5c4033'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(0, 4, 3, 0.2, Math.PI - 0.2); ctx.stroke();
+
+      const bc = Math.sin(Date.now() / 800);
+      ctx.fillStyle = 'rgba(160,200,255,0.5)';
+      ctx.beginPath(); ctx.arc(18, -8 + bc * 6, 4 + bc * 1.5, 0, Math.PI * 2); ctx.fill();
+      drawBlush(ctx, -5);
+    } else if (state === STATE.HUNGRY) {
+      const tailAngle = Math.sin(Date.now() / 700) * 0.2;
+      drawBody(ctx, bob, '#fae3c6', '#fff8f0');
+      drawTail(ctx, bob, tailAngle, '#fae3c6');
+      ctx.fillStyle = '#fae3c6';
+      ctx.beginPath(); ctx.ellipse(-35, -28 + bob, 10, 16, -0.4, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(35, -28 + bob, 10, 16, 0.4, 0, Math.PI * 2); ctx.fill();
+      drawPaws(ctx, bob);
+      drawEyes(ctx, bob, 'open');
+      drawNoseAndMouth(ctx, bob, 'sad');
+      drawWhiskers(ctx, bob);
+      drawBlush(ctx, bob);
+    } else {
+      const isWalking = state === STATE.WALKING;
+      const isHappy = state === STATE.HAPPY;
+      const frame = pet.animFrame;
+
+      let b = bob;
+      if (isHappy) b -= Math.abs(Math.sin(frame * 0.25)) * 8;
+
+      const tailAngle = isWalking
+        ? Math.sin(frame * 0.4) * 0.4 + Math.sin(frame * 0.3) * 0.2
+        : isHappy ? Math.sin(frame * 0.5) * 0.6
+        : Math.sin(Date.now() / 500) * 0.3;
+
+      drawBody(ctx, b, '#fae3c6', '#fff8f0');
+      drawTail(ctx, b, tailAngle, '#fae3c6');
+      drawEars(ctx, b, '#fae3c6', '#f0c4a0');
+
+      if (isWalking) {
+        const step = Math.sin(frame * 0.3);
+        ctx.fillStyle = '#f5e6d3';
+        ctx.beginPath(); ctx.ellipse(-22, 20 + b + step * 5, 10, 7, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(22, 20 + b - step * 5, 10, 7, 0, 0, Math.PI * 2); ctx.fill();
+      } else {
+        drawPaws(ctx, b);
+      }
+
+      const eyeState = pet.isBlinking ? 'closed' : 'open';
+      drawEyes(ctx, b, eyeState);
+      drawNoseAndMouth(ctx, b, isHappy ? 'happy' : 'neutral');
+      drawWhiskers(ctx, b);
+      drawBlush(ctx, b);
+    }
+
+    ctx.restore();
+  }
+
+  // Update logic
+  function updatePet() {
+    pet.stateTimer++;
+    pet.animFrame++;
+
+    if (!pet.dragging) {
+      pet.idleTimer++;
+
+      if (pet.state === STATE.IDLE) {
+        if (pet.idleTimer > 180 + Math.random() * 240) {
+          pet.idleTimer = 0;
+          if (Math.random() < 0.5) {
+            pet.targetX = 100 + Math.random() * (W - 200);
+            pet.targetY = 120 + Math.random() * (H - 200);
+            setState(STATE.WALKING);
+          }
+        }
+      } else if (pet.state === STATE.WALKING) {
+        const dx = pet.targetX - pet.x;
+        const dy = pet.targetY - pet.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist < 8) {
+          setState(STATE.IDLE);
+          pet.vx = 0; pet.vy = 0;
+        } else {
+          const speed = 1.8;
+          pet.vx = (dx / dist) * speed;
+          pet.vy = (dy / dist) * speed;
+          pet.x += pet.vx;
+          pet.y += pet.vy;
+          if (dx > 0) pet.facing = 1;
+          else if (dx < 0) pet.facing = -1;
+          pet.bobOffset = Math.sin(pet.animFrame * 0.3) * 3;
+        }
+      } else if (pet.state === STATE.HAPPY) {
+        if (pet.stateTimer > 60) {
+          setState(STATE.IDLE);
+          pet.idleTimer = 0;
+        }
+        pet.bobOffset = Math.abs(Math.sin(pet.animFrame * 0.25)) * 8;
+      } else if (pet.state === STATE.SLEEPING) {
+        if (pet.stateTimer > 400 + Math.random() * 200) {
+          setState(STATE.IDLE);
+          pet.idleTimer = 0;
+        }
+      } else if (pet.state === STATE.HUNGRY) {
+        if (pet.stateTimer > 200) {
+          setState(STATE.IDLE);
+          pet.idleTimer = 0;
+        }
+      }
+    }
+
+    if (pet.state === STATE.IDLE) {
+      pet.bobOffset = Math.sin(Date.now() / 1200) * 2;
+    }
+
+    if (pet.state !== STATE.SLEEPING) {
+      pet.blinkTimer++;
+      if (!pet.isBlinking && pet.blinkTimer > 120 + Math.random() * 180) {
+        pet.isBlinking = true;
+      }
+      if (pet.isBlinking && pet.blinkTimer > 125 + Math.random() * 10) {
+        pet.isBlinking = false;
+        pet.blinkTimer = 0;
+      }
+    }
+
+    if (!pet.dragging) {
+      pet.hunger = Math.max(0, pet.hunger - 0.015);
+      if (pet.state !== STATE.HAPPY) {
+        pet.happiness = Math.max(0, pet.happiness - 0.005);
+      }
+      if (pet.hunger < 20 && pet.state === STATE.IDLE && pet.idleTimer > 300) {
+        setState(STATE.HUNGRY);
+      }
+    }
+
+    if (speechTimer > 0) speechTimer--;
+    if (speechTimer <= 0 && Math.random() < 0.002 && pet.state !== STATE.SLEEPING) {
+      const msg = speechMessages[Math.floor(Math.random() * speechMessages.length)];
+      say(msg, 100);
+    }
+
+    pet.x = Math.max(80, Math.min(W - 80, pet.x));
+    pet.y = Math.max(100, Math.min(H - 60, pet.y));
+
+    updateParticles();
+  }
+
+  function render() {
+    ctx.clearRect(0, 0, W, H);
+
+    ctx.fillStyle = '#16162b';
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(255,255,255,0.02)';
+    ctx.lineWidth = 1;
+    for (let gx = 50; gx < W; gx += 50) {
+      ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
+    }
+    for (let gy = 50; gy < H; gy += 50) {
+      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+    }
+
+    drawParticles(ctx);
+
+    const bob = pet.state === STATE.SLEEPING ? -5 : pet.bobOffset;
+    const speechY = pet.y - 10 + bob;
+    drawSpeechBubble(ctx, pet.x, speechY);
+    drawPet(ctx);
+
+    happinessBar.style.width = pet.happiness + '%';
+    hungerBar.style.width = pet.hunger + '%';
+    hungerBar.style.background = pet.hunger < 25 ? '#ff6b6b' : '#ffa94d';
+  }
+
+  // Events
+  let hoverOnPet = false;
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (hitTest(e.clientX, e.clientY)) {
+      pet.dragging = true;
+      pet.dragOx = pet.x - e.clientX;
+      pet.dragOy = pet.y - e.clientY;
+      pet.vx = 0; pet.vy = 0;
+      setState(STATE.IDLE);
+    }
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (pet.dragging) {
+      pet.x = e.clientX + pet.dragOx;
+      pet.y = e.clientY + pet.dragOy;
+      pet.targetX = pet.x;
+      pet.targetY = pet.y;
+    }
+    hoverOnPet = hitTest(e.clientX, e.clientY);
+    canvas.style.cursor = pet.dragging ? 'grabbing' : hoverOnPet ? 'grab' : 'default';
+    statusPanel.classList.toggle('visible', hoverOnPet || pet.dragging);
+  });
+
+  canvas.addEventListener('mouseup', () => {
+    if (pet.dragging) {
+      pet.dragging = false;
+      pet.targetX = pet.x;
+      pet.targetY = pet.y;
+      setState(STATE.IDLE);
+      pet.idleTimer = 0;
+    }
+  });
+
+  canvas.addEventListener('click', (e) => {
+    if (pet.dragging) return;
+    if (hitTest(e.clientX, e.clientY)) {
+      setState(STATE.HAPPY);
+      pet.happiness = Math.min(100, pet.happiness + 15);
+      spawnParticles(pet.x, pet.y - 30, 'heart', 8);
+      spawnParticles(pet.x, pet.y - 30, 'sparkle', 4);
+      say(['喵呜~', '嘻嘻', '好舒服!', '再摸摸!', '最喜欢了'][Math.floor(Math.random() * 5)], 80);
+    }
+  });
+
+  canvas.addEventListener('dblclick', (e) => {
+    if (hitTest(e.clientX, e.clientY)) {
+      setState(STATE.HAPPY);
+      pet.hunger = Math.min(100, pet.hunger + 30);
+      pet.happiness = Math.min(100, pet.happiness + 5);
+      spawnParticles(pet.x, pet.y - 20, 'food', 6);
+      spawnParticles(pet.x, pet.y - 20, 'sparkle', 3);
+      say('好吃! 好吃!', 90);
+    }
+  });
+
+  // Touch
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    const t = e.touches[0];
+    if (hitTest(t.clientX, t.clientY)) {
+      pet.dragging = true;
+      pet.dragOx = pet.x - t.clientX;
+      pet.dragOy = pet.y - t.clientY;
+      pet.vx = 0; pet.vy = 0;
+      setState(STATE.IDLE);
+    }
+  }, { passive: false });
+
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    if (pet.dragging) {
+      const t = e.touches[0];
+      pet.x = t.clientX + pet.dragOx;
+      pet.y = t.clientY + pet.dragOy;
+      pet.targetX = pet.x;
+      pet.targetY = pet.y;
+    }
+  }, { passive: false });
+
+  canvas.addEventListener('touchend', () => {
+    if (pet.dragging) {
+      pet.dragging = false;
+      pet.targetX = pet.x;
+      pet.targetY = pet.y;
+      setState(STATE.IDLE);
+      pet.idleTimer = 0;
+      setState(STATE.HAPPY);
+      pet.happiness = Math.min(100, pet.happiness + 15);
+      spawnParticles(pet.x, pet.y - 30, 'heart', 8);
+      say('喵呜~', 80);
+    }
+  });
+
+  // Loop
+  function loop() {
+    updatePet();
+    render();
+    hintEl.style.opacity = (pet.dragging || hoverOnPet) ? '0' : '0.6';
+    requestAnimationFrame(loop);
+  }
+
+  pet.x = W * 0.4;
+  pet.y = H * 0.5;
+  pet.targetX = pet.x;
+  pet.targetY = pet.y;
+  loop();
+})();
+</script>
+</body>
+</html>
